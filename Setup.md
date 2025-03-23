@@ -1,6 +1,6 @@
 # Setup Steps for Kwintes Cloud on Ubuntu VPS
 
-This guide provides step-by-step instructions for setting up Kwintes Cloud (including Puter integration) on an Ubuntu VPS.
+This guide provides step-by-step instructions for setting up Kwintes Cloud (including Puter and Telegram integration) on an Ubuntu VPS.
 
 ## System Requirements
 - Ubuntu 24.04 LTS
@@ -61,8 +61,7 @@ ufw allow 5678  # n8n workflow
 ufw allow 8080  # SearXNG 
 ufw allow 11434 # Ollama
 ufw allow 7000  # Puter
-ufw allow 8501  # Archon Streamlit UI (if using)
-ufw allow 5001  # DocLing Serve (if using)
+ufw allow 3001  # Archon Streamlit UI (if using)
 ufw reload
 ```
 
@@ -73,9 +72,13 @@ ufw reload
 git clone https://github.com/ThijsdeZeeuw/small_kwintes_cloud.git
 cd small_kwintes_cloud
 
-# Create Puter data directory
+# Create Puter data directory with proper permissions
 mkdir -p puter-data
 sudo chown -R 1000:1000 puter-data
+
+# Create n8n backup directories to prevent import errors
+mkdir -p n8n/backup/credentials n8n/backup/workflows
+touch n8n/backup/credentials/.keep n8n/backup/workflows/.keep
 
 # Edit .env file with your configuration
 # Make sure to set these important values:
@@ -85,13 +88,21 @@ sudo chown -R 1000:1000 puter-data
 # - N8N_USER_MANAGEMENT_JWT_SECRET
 # - NGROK_AUTHTOKEN (if using Ngrok)
 # - TELEGRAM_BOT_TOKEN (if using Telegram)
+# - PUTER_HOSTNAME (for Puter integration)
 nano .env
 ```
 
 ## 4. Start Services
 
+The improved `start_services.py` script has been enhanced to:
+- Properly setup Puter directories
+- Check and configure Telegram integration
+- Fix n8n-import issues
+- Continue running even if some services encounter problems
+- Display detailed status information
+
 ```bash
-# Start all services (including Puter)
+# Start all services (including Puter and Telegram)
 python3 start_services.py --profile cpu
 
 # If you have NVIDIA GPU available:
@@ -103,10 +114,14 @@ python3 start_services.py --profile cpu
 
 The script will:
 1. Clone the Supabase repository
-2. Configure environment settings
-3. Start Supabase services
-4. Start all other services (including Puter)
-5. Configure Ngrok for webhook access (if configured)
+2. Prepare the Puter data directory
+3. Check Telegram configuration
+4. Prepare n8n directories to prevent import errors
+5. Start Supabase services
+6. Start all other services (including Puter)
+7. Update ngrok URL for webhook access (if configured)
+8. Configure Telegram webhook (if configured)
+9. Check which services are running and report their status
 
 ## 5. Access Your Services
 
@@ -122,7 +137,46 @@ If you've configured domain names in your .env file and DNS is set up properly, 
 - `https://webui.yourdomain.com/`
 - etc.
 
-## 6. Set Up System Service (Optional)
+## 6. Puter Configuration and Usage
+
+Puter provides a web-based cloud operating system that's integrated with your other services:
+
+1. **Initial Access**
+   - Access Puter at `http://YOUR_SERVER_IP:7000/` or `https://puter.yourdomain.com/`
+   - Create an administrator account on first login
+
+2. **File Management**
+   - Upload files directly through the web interface
+   - Files are stored persistently in the `puter-data` directory
+   - Organize content using the familiar desktop interface
+
+3. **Integration with n8n and other services**
+   - Puter can communicate with n8n workflows
+   - Store, process, and retrieve files from your Puter instance
+   - Use in conjunction with your AI services
+
+## 7. Telegram Integration
+
+Kwintes Cloud includes a Telegram integration for authentication and bot interactions:
+
+1. **Setup Telegram Bot**
+   - Create a bot via @BotFather on Telegram
+   - Update `.env` with your bot token and username:
+     ```
+     TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+     TELEGRAM_BOT_USERNAME=your_bot_username
+     ```
+
+2. **Configure Webhook**
+   - The `update_telegram_webhook.sh` script is executed automatically during startup
+   - It configures your bot to receive notifications through n8n
+   - Telegram login widget will use this communication channel
+
+3. **Access Login Page**
+   - Use the Telegram login widget at `https://login.yourdomain.com/`
+   - The login page securely authenticates users via Telegram
+
+## 8. Set Up System Service (Optional)
 
 To run as a system service that starts automatically on boot:
 
@@ -158,7 +212,7 @@ sudo systemctl enable localai.service
 sudo systemctl start localai.service
 ```
 
-## 7. Update Your System
+## 9. Update Your System
 
 When you need to update:
 
@@ -173,34 +227,62 @@ docker compose -p localai -f docker-compose.yml -f supabase/docker/docker-compos
 python3 start_services.py --profile cpu
 ```
 
-## 8. Troubleshooting
+## 10. Troubleshooting
 
-If you encounter issues:
+### Common Issues
 
-```bash
-# Check Docker service
-sudo systemctl status docker
+1. **n8n-import Failures**
+   - If `n8n-import` service fails, check that you have created the necessary directories:
+     ```bash
+     mkdir -p n8n/backup/credentials n8n/backup/workflows
+     touch n8n/backup/credentials/.keep n8n/backup/workflows/.keep
+     ```
+   - The enhanced script handles this automatically
 
-# Check logs for all services
-docker compose -p localai logs
+2. **Puter Not Starting**
+   - Check permissions on the puter-data directory:
+     ```bash
+     sudo chown -R 1000:1000 puter-data
+     ```
+   - Check Puter logs:
+     ```bash
+     docker logs puter
+     ```
 
-# Check logs for specific service
-docker logs puter
-docker logs n8n
-docker logs open-webui
+3. **Telegram Integration Not Working**
+   - Verify your bot token in .env
+   - Check ngrok URL is correctly updated
+   - Run webhook update manually:
+     ```bash
+     chmod +x update_telegram_webhook.sh
+     ./update_telegram_webhook.sh
+     ```
 
-# Check system resources
-htop
+4. **General Troubleshooting Commands**
+   ```bash
+   # Check Docker service
+   sudo systemctl status docker
 
-# If Docker daemon isn't running
-sudo systemctl start docker
-sudo systemctl enable docker
+   # Check logs for all services
+   docker compose -p localai logs
 
-# Permission issues
-sudo chmod 666 /var/run/docker.sock
-```
+   # Check logs for specific service
+   docker logs puter
+   docker logs n8n
+   docker logs open-webui
 
-## Additional Configuration
+   # Check system resources
+   htop
+
+   # Check container status
+   docker ps
+
+   # Restart a specific container
+   docker restart puter
+   docker restart n8n
+   ```
+
+## 11. Additional Configuration
 
 ### Configuring Ngrok (for Webhooks)
 
@@ -210,18 +292,6 @@ If you need your n8n webhooks accessible from the internet:
 2. Get your auth token from the dashboard
 3. Add to `.env`: `NGROK_AUTHTOKEN=your-ngrok-auth-token`
 4. Run `./update_ngrok_url.sh` after services are started
-
-### Telegram Integration
-
-For Telegram login:
-
-1. Create a bot via BotFather on Telegram
-2. Get your bot token and set in the `.env` file:
-   ```
-   TELEGRAM_BOT_TOKEN=your-telegram-bot-token
-   TELEGRAM_BOT_USERNAME=your_bot_username
-   ```
-3. Configure your domain in BotFather under Login Widget settings
 
 ### Local Ollama Setup (Optional)
 
@@ -240,7 +310,7 @@ systemctl --user enable ollama
 systemctl --user start ollama
 ```
 
-### Setting Up WebUI
+### WebUI Configuration
 
 1. Access WebUI at `http://YOUR_SERVER_IP:3000/`
 2. Configure Workspace Functions:

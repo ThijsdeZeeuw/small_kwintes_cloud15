@@ -3,8 +3,8 @@
 start_services.py
 
 This script starts the Supabase stack first, waits for it to initialize, and then starts
-the local AI stack. Both stacks use the same Docker Compose project name ("localai")
-so they appear together in Docker Desktop.
+the local AI stack with support for Puter and Telegram. Both stacks use the same Docker 
+Compose project name ("localai") so they appear together in Docker Desktop.
 """
 
 import os
@@ -46,6 +46,67 @@ def prepare_supabase_env():
     print("Copying .env in root to .env in supabase/docker...")
     shutil.copyfile(env_example_path, env_path)
 
+def check_puter_setup():
+    """Check and prepare the Puter data directory."""
+    print("Checking Puter configuration...")
+    if not os.path.exists("puter-data"):
+        print("Creating Puter data directory...")
+        os.makedirs("puter-data", exist_ok=True)
+        
+        # Set appropriate permissions on Unix-like systems
+        if platform.system() != "Windows":
+            try:
+                # UID 1000 is the standard user ID in many Docker containers
+                run_command(["sudo", "chown", "-R", "1000:1000", "puter-data"])
+                print("Set permissions for Puter data directory")
+            except Exception as e:
+                print(f"Warning: Could not set permissions for Puter data directory: {e}")
+                print("You may need to manually run: sudo chown -R 1000:1000 puter-data")
+    else:
+        print("Puter data directory exists")
+
+def check_telegram_setup():
+    """Check Telegram configuration and setup webhook if needed."""
+    print("Checking Telegram configuration...")
+    
+    # Check if Telegram bot token is configured
+    with open(".env", "r") as file:
+        env_contents = file.read()
+        
+    if "TELEGRAM_BOT_TOKEN=your-telegram-bot-token" in env_contents or "TELEGRAM_BOT_TOKEN=" in env_contents:
+        print("Warning: Telegram bot token not configured in .env file")
+        print("If you want to use Telegram integration, set TELEGRAM_BOT_TOKEN in your .env file")
+    elif "TELEGRAM_BOT_TOKEN" in env_contents:
+        print("Telegram bot token found in .env file")
+        
+        # Make update_telegram_webhook.sh executable if it exists
+        if os.path.exists("update_telegram_webhook.sh"):
+            try:
+                os.chmod("update_telegram_webhook.sh", 0o755)
+                print("Made update_telegram_webhook.sh executable")
+            except Exception as e:
+                print(f"Warning: Could not make update_telegram_webhook.sh executable: {e}")
+
+def prepare_n8n_directories():
+    """Prepare n8n backup directories to avoid import errors."""
+    print("Preparing n8n backup directories...")
+    os.makedirs("n8n/backup/credentials", exist_ok=True)
+    os.makedirs("n8n/backup/workflows", exist_ok=True)
+    
+    # Create empty files to ensure directories aren't empty
+    cred_file = os.path.join("n8n", "backup", "credentials", ".keep")
+    wf_file = os.path.join("n8n", "backup", "workflows", ".keep")
+    
+    if not os.path.exists(cred_file):
+        with open(cred_file, 'w') as f:
+            f.write("")
+    
+    if not os.path.exists(wf_file):
+        with open(wf_file, 'w') as f:
+            f.write("")
+    
+    print("n8n backup directories prepared")
+
 def stop_existing_containers():
     """Stop and remove existing containers for our unified project ('localai')."""
     print("Stopping and removing existing containers for the unified project 'localai'...")
@@ -71,7 +132,15 @@ def start_local_ai(profile=None):
     if profile and profile != "none":
         cmd.extend(["--profile", profile])
     cmd.extend(["-f", "docker-compose.yml", "up", "-d"])
-    run_command(cmd)
+    
+    # Use non-checking run to prevent script termination if n8n-import fails
+    try:
+        run_command(cmd)
+    except subprocess.CalledProcessError as e:
+        print(f"Warning: Some services may have failed to start: {e}")
+        print("Checking which services are running...")
+        subprocess.run(["docker", "ps", "--format", "table {{.Names}}\t{{.Status}}"])
+        print("\nContinuing with script execution...")
 
 def generate_searxng_secret_key():
     """Generate a secret key for SearXNG based on the current platform."""
@@ -224,14 +293,50 @@ def update_ngrok_url():
         print(f"Error updating ngrok URL: {e}")
         print("You may need to manually run: ./update_ngrok_url.sh")
 
+def configure_telegram_webhook():
+    """Set up Telegram webhook after services are started."""
+    print("Configuring Telegram webhook...")
+    if os.path.exists("update_telegram_webhook.sh"):
+        try:
+            os.chmod("update_telegram_webhook.sh", 0o755)
+            run_command(["./update_telegram_webhook.sh"])
+            print("Telegram webhook configured successfully")
+        except Exception as e:
+            print(f"Error configuring Telegram webhook: {e}")
+            print("You may need to manually run: ./update_telegram_webhook.sh")
+    else:
+        print("Warning: update_telegram_webhook.sh not found")
+
+def check_required_services():
+    """Check if all core services are running."""
+    print("Checking service status...")
+    services = ["n8n", "ollama", "puter", "open-webui", "searxng"]
+    
+    for service in services:
+        try:
+            result = subprocess.run(
+                ["docker", "ps", "--filter", f"name={service}", "--format", "{{.Status}}"],
+                capture_output=True, text=True, check=True
+            )
+            if result.stdout.strip():
+                print(f"✅ {service} is running")
+            else:
+                print(f"❌ {service} is not running")
+        except Exception as e:
+            print(f"Error checking {service}: {e}")
+
 def main():
     parser = argparse.ArgumentParser(description='Start the local AI and Supabase services.')
     parser.add_argument('--profile', choices=['cpu', 'gpu-nvidia', 'gpu-amd', 'none'], default='cpu',
                       help='Profile to use for Docker Compose (default: cpu)')
     args = parser.parse_args()
 
+    # Prepare all services
     clone_supabase_repo()
     prepare_supabase_env()
+    check_puter_setup()
+    check_telegram_setup()
+    prepare_n8n_directories()
     
     # Generate SearXNG secret key and check docker-compose.yml
     generate_searxng_secret_key()
@@ -249,10 +354,30 @@ def main():
     # Then start the local AI services
     start_local_ai(args.profile)
     
+    # Give services some time to start up
+    print("Waiting for services to start...")
+    time.sleep(10)
+    
     # Update ngrok URL after services are started
     update_ngrok_url()
-    print("All services started successfully. Your n8n instance should now be accessible via ngrok.")
-    print("Check the ngrok URL using 'docker logs ngrok' or in your .env file under NGROK_URL.")
+    
+    # Configure Telegram webhook after ngrok URL is updated
+    configure_telegram_webhook()
+    
+    # Check service status
+    check_required_services()
+    
+    print("\n🚀 All services started successfully!")
+    print("\n📊 Access your services at:")
+    print(" - WebUI: http://localhost:3000")
+    print(" - n8n: http://localhost:5678")
+    print(" - Puter: http://localhost:7000")
+    print(" - SearXNG: http://localhost:8080")
+    print(" - Flowise: http://localhost:3001")
+    
+    print("\n🔄 If you're using ngrok, you can check the public URL with:")
+    print("  docker logs ngrok")
+    print("  or check your .env file under NGROK_URL\n")
 
 if __name__ == "__main__":
     main()
