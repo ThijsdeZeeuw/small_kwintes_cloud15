@@ -69,7 +69,7 @@ ufw reload
 
 ```bash
 # Clone the repository
-git clone https://github.com/ThijsdeZeeuw/small_kwintes_cloud.git
+git clone https://github.com/ThijsdeZeeuw/small_kwintes_cloud15.git
 cd small_kwintes_cloud
 
 # Create Puter data directory with proper permissions
